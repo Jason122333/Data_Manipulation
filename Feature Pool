@@ -1,0 +1,26 @@
+# For certain columns, count value number of each category and the find ratio 
+dfff = LRx_1
+PRESC_ID_unique = list(np.unique(dfff['PRESC_ID']))
+dff = pd.DataFrame()
+dffff = pd.DataFrame()
+dffff.iloc['PRESC_ID'] = PRESC_ID_unique
+
+# 'Variable_Category' column cannot be totally empty
+Variable_Category = ['NEW_REFIL_CD', 'PATIENT_GENDER','PAYER','RX_CATEGORY','PRODUCT_NAME','CHAIN']
+
+for x in range(len(PRESC_ID_unique)):
+    df = dfff[dfff['PRESC_ID'] == PRESC_ID_unique[x]]
+    for j in range(len(Variable_Category)):
+        Variable = list(df[Variable_Category[j]])
+        s=set()
+        for i in Variable:
+            df['Avg_'+i] = Variable.count(i)
+            dff[Variable_Category[j]+'_'+i] = df['Avg_'+i]
+            rows, columns = dff.shape
+            dff[Variable_Category[j]+'_'+i+'_'+'Ratio'] = df['Avg_'+i]/rows
+            
+    dffff = dffff.append(dff.head(1),ignore_index=True) 
+    dff = pd.DataFrame()
+    
+dffff['PRESC_ID'] = PRESC_ID_unique
+
