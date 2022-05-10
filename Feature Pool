@@ -24,3 +24,70 @@ for x in range(len(PRESC_ID_unique)):
     
 dffff['PRESC_ID'] = PRESC_ID_unique
 
+
+
+# Count values in certain columns
+dfff = LRx_1
+Variable_Count = ['PRESC_ID',"PATIENT_KEY"]  # distinct
+df_Count = dfff[Variable_Count]
+df_Count = df_Count.groupby('PRESC_ID').count().reset_index()
+
+Variable_Count = ["PATIENT_KEY"]
+for j in range(len(Variable_Count)):
+    df_Count.rename(columns={Variable_Count[j]: Variable_Count[j] + '_Number'}, inplace=True)
+   
+
+# Couont unique values in certain columns
+dfff = LRx_1
+Variable_Unique_Count = ['PRESC_ID',"PRODUCT_NAME"]  # distinct
+df_Unique_Count = dfff[Variable_Unique_Count]
+df_Unique_Count = df_Unique_Count.groupby('PRESC_ID').nunique().reset_index()
+
+Variable_Unique_Count = ["PATIENT_KEY", "PRODUCT_NAME"]
+for j in range(len(Variable_Unique_Count)):
+    df_Unique_Count.rename(columns={Variable_Unique_Count[j]: Variable_Unique_Count[j] + '_Type_Number'}, inplace=True)
+df_Unique_Count
+
+
+
+# Get average number of certain columns
+dfff = LRx_1
+Variable_Avg = ["PRESC_ID","PATIENT_YR_AGE", "DAYS_SUPPLY", "QUANTITY"]  # distinct
+df_Avg = dfff[Variable_Avg]
+df_Avg = df_Avg.groupby('PRESC_ID').mean().reset_index()
+
+Variable_Avg = ["PATIENT_YR_AGE", "DAYS_SUPPLY", "QUANTITY"]
+for j in range(len(Variable_Avg)):
+    df_Avg.rename(columns={Variable_Avg[j]: Variable_Avg[j] + '_Avg'}, inplace=True)
+df_Avg
+
+
+LRx_1 = pd.concat([dffff, df_Avg, df_Count,df_Unique_Count],axis=1)
+LRx_1 = LRx_1.loc[:,~LRx_1.columns.duplicated()]
+LRx_1
+
+
+
+# Convert 'PRESC_ID' in LRx_1 to int
+LRx_1['PRESC_ID'] = LRx_1['PRESC_ID'].astype(int)
+
+# Merge LRx_1 and XPO_PRESCRIBER
+LRx_2 = pd.merge(LRx_1,XPO_PRESCRIBER,left_on='PRESC_ID',right_on='PRESCR_ID',how='left') 
+LRx_2 = LRx_2.loc[:,~LRx_2.columns.duplicated()]
+LRx_2
+
+
+# get_dummy
+
+Categorical_Variable = ["PRESCR_LEVEL_CODE","PRESCR_GENDER_CODE","PRESCR_SALUTATION_SUFFIX", "PRESCR_P_ADDR_PROVINCE_DESC", "PRESCR_P_ADDR_ENGL_FRENCH_IND", "PRESCR_P_ADDR_ORG_PRV_SECT_IND","PRESCR_P_ADDR_PROFIT_ORG_IND","PRESCR_ACTIVE_IND","PRESCR_LANGUAGE_DESC", "PRESCR_P_PROF_GRAD_SCHOOL_NAME","PRESCR_P_PROF_REP_VISIT_IND", "PRESCR_P_PROF_ACCPT_SAMPLS_IND","PRESCR_P_ADDR_ORG_LANG_ID", "PRESCR_P_ADDR_ORG_PURPOSE_DESC","PRESCR_CURRENT_FLAG", "PRESCR_P_ADDR_PROVINCE_LETTER","PRESCR_P_INTRST_SPEC_ACCRD_IND", "PRESCR_P_PROF_STATUS_DESC","PRESCR_SALUTATION_SUFFIX_TEXT","PRESCR_DELETE_FLAG", "PRESCR_PPR_LABEL","PRESCR_P_ADDR_IND","PRESCR_STATUS","PRESCR_P_PROF_OPT_OUT_IND","PRESCR_P_PROF_PRFL_IND","PRESCR_P_PROF_PRFL_MAIL_AD_IND"]
+
+def get_dummy(variable):
+    XPO_PRESCRIBER_1 = pd.concat([XPO_PRESCRIBER.drop([variable], axis = 1), pd.get_dummies(XPO_PRESCRIBER[variable], prefix=variable, drop_first = True)], axis=1)
+    return XPO_PRESCRIBER_1
+for i in range(len(Categorical_Variable)):
+    XPO_PRESCRIBER_1 = get_dummy(Categorical_Variable[i])
+    XPO_PRESCRIBER = XPO_PRESCRIBER_1
+    
+    
+# Check Missing Data
+percent_missing = XPO_PRESCRIBER.isnull().sum() * 100 / len(XPO_PRESCRIBER)
