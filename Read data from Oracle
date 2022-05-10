@@ -1,0 +1,90 @@
+from initialize import *
+from dateutil.relativedelta import relativedelta
+from pyspark import SparkConf,SparkContext
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import unix_timestamp
+from pyspark.sql.functions import from_unixtime
+from pyspark.sql import GroupedData
+from pyspark.sql import functions
+from pyspark.sql.functions import *
+from pyspark.sql import SQLContext
+from pyspark.sql.types import *
+from pyspark.sql.window import Window
+from IPython.display import HTML
+from IPython.core.interactiveshell import InteractiveShell
+from collections import Counter
+import style
+import seaborn as sns
+InteractiveShell.ast_node_interactivity = "all"
+import pandas as pd
+import numpy as np
+pd.set_option('display.max_colwidth', -1)
+pd.set_option("display.max_columns", 100)
+pd.set_option('display.max_rows', 500)
+import sys
+import datetime
+import sqlite3
+
+
+print("You are in the ",thisCluster()," Cluster")  
+time_stamp=int(timeStamp(format='%Y%m%d'))
+print("Time Stamp: ", time_stamp)
+with timer("Python Init"):
+    pysparkInit()
+
+with timer("Spark Init"):
+    spark=sparkInit(queue_name="ca9",script="bdf_rx_qc")
+    
+print("Your Spark Application ID is: ",spark._sc.applicationId)  
+print("Your Application Name is: ",spark._sc.appName)
+print("The version of spark that you are using is: ",spark._sc.version)
+url = "spark-%s.%s" % (os.environ["CDSW_ENGINE_ID"], os.environ["CDSW_DOMAIN"])
+
+print("The version of python is: ",python_version())
+print("The version of pandas is: ",pd.__version__)
+print(' ')
+print("Right Click to Open New Window for Spark UI Below" )
+IPython.display.HTML("<a href=http://%s>Spark UI</a>" % url)
+
+
+#Pull data from Oracle
+ORA_PORT = 'xxxxxxx'
+ORA_DB = 'xxxxx'
+ORA_USER = 'xxxxx'
+ORA_PSWD = 'xxxxx'
+
+
+query = '''(
+select PRESCR_ID, PRESCR_KEY, PRESCR_LEVEL_CODE, PRESCR_LKP_KEY, PRESCR_GENDER_CODE, PRESCR_P_ADDR_ENGL_FRENCH_IND,PRESCR_LANGUAGE_ID,
+PRESCR_P_ADDR_ORG_PRV_SECT_IND, PRESCR_P_ADDR_PROFIT_ORG_IND, PRESCR_ACTIVE_IND, PRESCR_LANGUAGE_DESC, PRESCR_P_SPEC_CODE,PRESCR_P_SPEC_DESC, PRESCR_P_SPEC_FRE_DESC,PRESCR_P_SPEC_FRE_CODE,
+PRESCR_P_PROF_GRAD_YEAR, PRESCR_P_PROF_GRAD_SCHOOL_NAME, PRESCR_P_PROF_REP_VISIT_IND, PRESCR_P_PROF_ACCPT_SAMPLS_IND, 
+PRESCR_P_ADDR_ORG_LANG_ID, PRESCR_P_ADDR_ORG_PURPOSE_DESC,PRESCR_P_SPEC_ACCRED_IND,PRESCR_P_INTRST_SPEC_ID, PRESCR_P_INTRST_SPEC_DESC, PRESCR_P_INTRST_SPEC_CODE,PRESCR_P_ADDR_PC2, PRESCR_P_ADDR_ORG_TYPE_DESC,
+PRESCR_EFF_START_DATE, PRESCR_CURRENT_FLAG, PRESCR_LAST_UPD_DATE, PRESCR_P_ADDR_PROVINCE_DESC, 
+PRESCR_P_ADDR_PROVINCE_LETTER, PRESCR_P_INTRST_SPEC_ACCRD_IND, PRESCR_P_PROF_STATUS_DESC, PRESCR_SALUTATION_SUFFIX, PRESCR_SALUTATION_SUFFIX_TEXT, 
+PRESCR_ATTRIB_LAST_UPD_DATE, PRESCR_DELETE_FLAG, PRESCR_PPR_LABEL, PRESCR_P_ADDR_IND, PRESCR_STATUS, PRESCR_P_PROF_OPT_OUT_IND, PRESCR_P_PROF_PRFL_IND, PRESCR_P_PROF_PRFL_MAIL_AD_IND
+from XPO_PRESCRIBER_ANON_DIM
+where PRESCR_ID in (
+select distinct(PRESC_ID) from ITD_DELIVERIES.XMD_RX_CATEGORIZED_BAYER_ATT
+where PRESC_ID ^= 0000000000)
+) tbl'''
+
+
+XPO_PRESCRIBER = spark.read.format('jdbc') \
+    .option("driver", "oracle.jdbc.driver.OracleDriver") \
+    .option("url", "jdbc:oracle:thin:{}/{}@//{}/{}".format(ORA_USER, ORA_PSWD, ORA_PORT, ORA_DB)) \
+    .option("dbtable", query) \
+    .load()
+XPO_PRESCRIBER.createOrReplaceTempView("XPO_PRESCRIBER")
+
+start = time.time()
+XPO_PRESCRIBER=XPO_PRESCRIBER.toPandas()
+end = time.time()
+temp = end-start
+print(temp)
+hours = temp//3600
+temp = temp - 3600*hours
+minutes = temp//60
+seconds = temp - 60*minutes
+print('%d:%d:%d' %(hours,minutes,seconds))
+
+XPO_PRESCRIBER
