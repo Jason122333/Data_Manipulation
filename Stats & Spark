@@ -1,0 +1,489 @@
+import pyspark
+print("Pyspark version is: {}".format(pyspark.__version__))
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import *
+from pyspark.sql.functions import col
+from pyspark.sql import *
+from pyspark.sql.types import *
+from pyspark.sql.types import FloatType, IntegerType
+from pyspark.sql import functions as F
+from pyspark.sql import SQLContext
+from pyspark.ml.feature import OneHotEncoder, StringIndexer
+from pyspark.ml.pipeline import Pipeline, PipelineModel, Estimator, Transformer
+from pyspark.sql.window import Window as W
+from pyspark.sql.functions import col, countDistinct, count
+from pyspark.sql.types import *
+from dateutil.relativedelta import relativedelta
+from pyspark import SparkConf,SparkContext
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import unix_timestamp
+from pyspark.sql.functions import from_unixtime
+from pyspark.sql import GroupedData
+from pyspark.sql import functions
+from pyspark.sql.functions import *
+from pyspark.sql import SQLContext
+from pyspark.sql.types import *
+from pyspark.sql.window import Window
+from IPython.display import HTML
+from IPython.core.interactiveshell import InteractiveShell
+from collections import Counter
+import style
+import seaborn as sns
+InteractiveShell.ast_node_interactivity = "all"
+import pandas as pd
+import numpy as np
+pd.set_option('display.max_colwidth', -1)
+pd.set_option("display.max_columns", 100)
+pd.set_option('display.max_rows', 500)
+import sys
+import datetime
+import sqlite3
+
+
+spark = SparkSession \
+        .builder.enableHiveSupport()\
+        .appName('Oracle_extractions')\
+        .config("spark.sql.shuffle.partitions", "100")\
+        .config("spark.sql.codegen", "true")\
+        .config("spark.jars", "/home/cdsw/ojdbc6.jar") \
+        .config("spark.driver.cores", "32") \
+        .config("spark.dynamicallocation.initialexecutors", "2")\
+        .config("spark.dynamicallocation.maxexecutors", "17")\
+        .config("spark.executor.memory", "20g")\
+        .config("spark.executor.cores", "6")\
+        .config("spark.kryoserializer.buffer.max", "1g")\
+        .config("spark.yarn.executor.memoryoverhead", "2000")\
+        .config("spark.broadcast.blocksize", "100m")\
+        .config("spark.driver.extraclasspath", "/home/cdsw/ojdbc6.jar") \
+        .config("spark.executor.extraClassPath", "/home/cdsw/ojdbc6.jar") \
+        .config("spark.dynamicAllocation.minExecutors", "8")\
+        .getOrCreate()
+             
+print('Spark Version:',spark.version)
+print('Application Id:',spark._jsc.sc().applicationId())
+spark_context = spark.sparkContext.getOrCreate()
+# sql_context = spark.SQLContext(spark_context)
+# hive_context = spark.HiveContext(spark_context)
+print('spark_context', spark_context)
+# print('sql_context', sql_context)
+# print('hive_context', hive_context)
+
+
+# READ CM_DIM FROM ORACLE
+query="""
+(select distinct cm_usc_code,product_short_name, cm_prod_pack_code as CMF10, product_logical_order
+from xpo_flat_cm_dim
+where client_mkt_short_name = 'Biron_Segmentation' and prod_level=0 and client_id = 211485
+order by 4)
+"""
+sparkdf = spark.read.format("jdbc")\
+    .option("url", "jdbc:oracle:thin:DNEISH/aug12th@//cdtspcan-scan.rxcorp.com:1521/PCANPROD")\
+    .option("dbtable", query)\
+    .option("driver", "oracle.jdbc.driver.OracleDriver")\
+    .option("fetchsize", "100000")\
+    .option("numPartitions", "10")\
+    .load()
+sparkdf.printSchema()
+cm_dim = sparkdf.toPandas()
+
+
+# READ RX_table FROM ORACLE
+query="""
+(select B.DATA_MTH_CAL_MTH as Month
+           ,B.OUTLET_ADDR_PROVINCE_CODE as Prov
+           ,C.product_logical_order as product_logical_order
+           ,c.product_short_name as product_short_name
+            ,Sum(B.TRX_VOL) As TRX
+            ,Sum(B.TRX_PRICE) As TRX_DOLLARS
+            ,Sum(B.NRX_VOL) As NRX
+            ,Sum(B.NRX_PRICE) As NRX_DOLLARS
+        From DM1_TPA2.AGG_GPX_CSG_MONTHLY B,
+        DM1.XPO_FLAT_CM_DIM C       
+    where B.PROD_PACK_KEY = C.PROD_PACK_KEY          
+    and C.prod_level = 0
+    and c.client_id = 211485
+    and c.client_mkt_short_name = 'Biron_Segmentation' and client_mkt_version_id=1
+    Group by     B.DATA_MTH_CAL_MTH
+              ,B.OUTLET_ADDR_PROVINCE_CODE 
+              ,C.product_logical_order
+              ,c.product_short_name
+    order by B.DATA_MTH_CAL_MTH)
+"""
+sparkdf = spark.read.format("jdbc")\
+    .option("url", "jdbc:oracle:thin:DNEISH/aug12th@//cdtspcan-scan.rxcorp.com:1521/PCANPROD")\
+    .option("dbtable", query)\
+    .option("driver", "oracle.jdbc.driver.OracleDriver")\
+    .option("fetchsize", "100000")\
+    .option("numPartitions", "10")\
+    .load()
+sparkdf.printSchema()
+RX_table = sparkdf.toPandas()
+
+
+# READ XPO FROM ORACLE
+query="""
+(select a14.PRESCR_P_ADDR_PROVINCE_CODE  PROVINCE,
+    a11.PRESCR_KEY  PRESCR_KEY,
+    max(a14.PRESCR_ID)  PRESCR_ID,
+    a14.PRESCR_P_SPEC_CODE SPEC,
+    a12.CLIENT_ID  CLIENT_ID,
+    a12.CLIENT_MKT_SHORT_NAME  CLIENT_MKT_SHORT_NAME,
+    a12.CLIENT_MKT_VERSION_ID  CLIENT_MKT_VERSION_ID,
+    a12.PRODUCT_SHORT_NAME  PRODUCT_SHORT_NAME,
+    a12.PRODUCT_LOGICAL_ORDER  PRODUCT_LOGICAL_ORDER,
+    a13.TIMEPERIODDESC  TIMEPERIODDESC,
+    sum(a11.RAF_RX_VOL)  RAFRXVOL
+    from  DM1_RX.XPO_RX_MONTHLY_PROV_PROD_AGGR  a11
+      LEFT JOIN (select distinct prod_pack_key
+      FROM CUSTOM_RX.MTD_ICS_CUSTOM_PRODUCTS_40
+      WHERE datamonth=202203
+      AND context_cd = 'XPO') a15
+    ON a11.prod_pack_key = a15.prod_pack_key
+      AND a15.prod_pack_key IS NULL, 
+    DM1.XPO_FLAT_CM_DIM     a12, 
+    DM1.XPO_ALL_TP_DIM    a13, 
+    DM1.XPO_PRESCRIBER_ANON_DIM    a14
+    where a11.PROD_PACK_KEY = a12.PROD_PACK_KEY and 
+    a11.DATA_MTH_CAL_MTH = a13.DATA_MTH_CAL_MTH and 
+    a11.PRESCR_KEY = a14.PRESCR_KEY
+    and a13.TIMEPERIODTYPE in ( 'MTH_MINUS23', 'MTH_MINUS22', 'MTH_MINUS21', 'MTH_MINUS20', 'MTH_MINUS19', 'MTH_MINUS18', 
+                               'MTH_MINUS17', 'MTH_MINUS16', 'MTH_MINUS15', 'MTH_MINUS14', 'MTH_MINUS13', 'MTH_MINUS12',
+                               'MTH_MINUS11', 'MTH_MINUS10', 'MTH_MINUS9', 'MTH_MINUS8', 'MTH_MINUS7', 'MTH_MINUS6', 
+                               'MTH_MINUS5', 'MTH_MINUS4', 'MTH_MINUS3', 'MTH_MINUS2', 'MTH_MINUS1', 'CURR_MONTH')
+    and a13.DATAMONTH = 202203
+    and a14.PRESCR_P_ADDR_PROVINCE_CODE in ('AB', 'SK', 'QC', 'ON', 'NS', 'NB')
+    and a14.PRESCR_LEVEL_CODE = 'PRESCRIBER'
+    and a12.CLIENT_ID = 211485
+    and a12.CLIENT_MKT_SHORT_NAME = 'Biron_Segmentation'
+    and a12.CLIENT_MKT_VERSION_ID = 1
+    and a12.PROD_LEVEL = 0
+    and a11.PRESCR_KEY NOT IN (select distinct prescr_key
+                              from DM1.XPO_OPTED_OUT_PRESCRIBER
+                              where OPT_OUT_STATUS = 'O')
+    and a14.PRESCR_ID NOT IN (select distinct prescr_id
+                             from DM1.XPO_PRESCRIBER_EXCLUSION)
+    group by    a14.PRESCR_P_ADDR_PROVINCE_CODE,
+    a11.PRESCR_KEY,    
+    a12.CLIENT_ID,
+    a12.CLIENT_MKT_SHORT_NAME,
+    a12.CLIENT_MKT_VERSION_ID,
+    a12.PRODUCT_SHORT_NAME,
+    a12.PRODUCT_LOGICAL_ORDER,
+    a13.TIMEPERIODDESC,
+    a14.PRESCR_P_SPEC_CODE
+    union all
+    select    a14.PRESCR_P_ADDR_PROVINCE_CODE  PROVINCE,
+    a11.PRESCR_KEY  PRESCR_KEY,
+    max(a14.PRESCR_ID)  PRESCR_ID,
+    a14.PRESCR_P_SPEC_CODE SPEC,
+    a12.CLIENT_ID  CLIENT_ID,
+    a12.CLIENT_MKT_SHORT_NAME  CLIENT_MKT_SHORT_NAME,
+    a12.CLIENT_MKT_VERSION_ID  CLIENT_MKT_VERSION_ID,
+    a12.PRODUCT_SHORT_NAME  PRODUCT_SHORT_NAME,
+    a12.PRODUCT_LOGICAL_ORDER  PRODUCT_LOGICAL_ORDER,
+    a13.TIMEPERIODDESC  TIMEPERIODDESC,
+    sum(a11.PDE_RX_VOL)  RAFRXVOL
+    from  CUSTOM_RX.BTS_ICS_XPO_PROV_AGG  a11, 
+    DM1.XPO_FLAT_CM_DIM    a12, 
+    DM1.XPO_ALL_TP_DIM    a13, 
+    DM1.XPO_PRESCRIBER_ANON_DIM    a14,
+    (select distinct prod_pack_key
+     from CUSTOM_RX.MTD_ICS_CUSTOM_PRODUCTS_40
+     where datamonth=202203
+     and context_cd = 'XPO') a15
+    where a11.PROD_PACK_KEY = a12.PROD_PACK_KEY and 
+    a11.DATA_MTH_CAL_MTH = a13.DATA_MTH_CAL_MTH and 
+    a11.PRESCR_KEY = a14.PRESCR_KEY and 
+    a11.prod_pack_key = a15.prod_pack_key
+    and a13.TIMEPERIODTYPE in ( 'MTH_MINUS23', 'MTH_MINUS22', 'MTH_MINUS21', 'MTH_MINUS20', 'MTH_MINUS19', 'MTH_MINUS18', 
+                               'MTH_MINUS17', 'MTH_MINUS16', 'MTH_MINUS15', 'MTH_MINUS14', 'MTH_MINUS13', 'MTH_MINUS12',
+                               'MTH_MINUS11', 'MTH_MINUS10', 'MTH_MINUS9', 'MTH_MINUS8', 'MTH_MINUS7', 'MTH_MINUS6', 
+                               'MTH_MINUS5', 'MTH_MINUS4', 'MTH_MINUS3', 'MTH_MINUS2', 'MTH_MINUS1', 'CURR_MONTH')
+    and a13.DATAMONTH = 202203
+    and a14.PRESCR_P_ADDR_PROVINCE_CODE in ('AB', 'SK', 'QC', 'ON', 'NS', 'NB')
+    and a14.PRESCR_LEVEL_CODE = 'PRESCRIBER'
+    and a12.CLIENT_ID = 211485
+    and a12.CLIENT_MKT_SHORT_NAME = 'Biron_Segmentation'
+    and a12.CLIENT_MKT_VERSION_ID = 1
+    and a12.PROD_LEVEL = 0
+    and a11.PRESCR_KEY NOT IN (select distinct prescr_key
+                              from DM1.XPO_OPTED_OUT_PRESCRIBER
+                              where OPT_OUT_STATUS = 'O')
+    and a14.PRESCR_ID NOT IN (select distinct prescr_id
+                             from DM1.XPO_PRESCRIBER_EXCLUSION)
+    group by    a14.PRESCR_P_ADDR_PROVINCE_CODE,
+    a11.PRESCR_KEY,    
+    a12.CLIENT_ID,
+    a12.CLIENT_MKT_SHORT_NAME,
+    a12.CLIENT_MKT_VERSION_ID,
+    a12.PRODUCT_SHORT_NAME,
+    a12.PRODUCT_LOGICAL_ORDER,
+    a13.TIMEPERIODDESC,
+    a14.PRESCR_P_SPEC_CODE)
+"""
+sparkdf = spark.read.format("jdbc")\
+    .option("url", "jdbc:oracle:thin:DNEISH/aug12th@//cdtspcan-scan.rxcorp.com:1521/PCANPROD")\
+    .option("dbtable", query)\
+    .option("driver", "oracle.jdbc.driver.OracleDriver")\
+    .option("fetchsize", "100000")\
+    .option("numPartitions", "10")\
+    .load()
+sparkdf.printSchema()
+xpo = sparkdf.toPandas()
+
+
+def xpo(maxdate, nbmth, nbframe_adj, nbmth_adj):  
+    """filename = "Xpo_Biron_Segmentation_Input.csv"
+    xpo = pd.read_csv(filename)"""
+    climkt_proj = xpo
+    Xpo_raw = pd.DataFrame()
+    Xpo_raw['province'] = climkt_proj['PROVINCE']
+    Xpo_raw['findr'] = climkt_proj['PRESCR_ID']
+    Xpo_raw['date'] = climkt_proj['TIMEPERIODDESC']
+    
+    Xpo_raw['rx'] = climkt_proj['RAFRXVOL']
+    Xpo_raw['prod'] = climkt_proj['PRODUCT_SHORT_NAME']
+    Xpo_raw['product_logical_order'] = climkt_proj['PRODUCT_LOGICAL_ORDER']
+    Xpo_raw['date'] = Xpo_raw['date'].apply(str)
+    
+    Xpo_raw['monthn'] = Xpo_raw['date'].str[:2]
+    Xpo_raw['year'] = Xpo_raw['date'].str[2:6]
+    Xpo_raw['monthn'] = pd.to_numeric(Xpo_raw['monthn'])
+    Xpo_raw['year'] = pd.to_numeric(Xpo_raw['year'])    
+    Xpo_raw['timep'] = pd.to_datetime((Xpo_raw['year'].values*10000 + Xpo_raw['monthn'].values*100 + 1), format = "%Y%m%d")
+    Xpo_raw.drop(['monthn', 'year'],axis=1)
+    Xpo_raw['MAT'] = Xpo_raw['date'].str[6:8]
+    Xpo_raw = Xpo_raw[Xpo_raw['MAT'] == '01']
+    
+    Xpo_raw.loc[(Xpo_raw['monthn'] == 1), 'month'] = 'JAN'
+    Xpo_raw.loc[(Xpo_raw['monthn'] == 2), 'month'] = 'FEB'
+    Xpo_raw.loc[(Xpo_raw['monthn'] == 3), 'month'] = 'MAR'
+    Xpo_raw.loc[(Xpo_raw['monthn'] == 4), 'month'] = 'APR'
+    Xpo_raw.loc[(Xpo_raw['monthn'] == 5), 'month'] = 'MAY'
+    Xpo_raw.loc[(Xpo_raw['monthn'] == 6), 'month'] = 'JUN'
+    Xpo_raw.loc[(Xpo_raw['monthn'] == 7), 'month'] = 'JUL'
+    Xpo_raw.loc[(Xpo_raw['monthn'] == 8), 'month'] = 'AUG'
+    Xpo_raw.loc[(Xpo_raw['monthn'] == 9), 'month'] = 'SEP'
+    Xpo_raw.loc[(Xpo_raw['monthn'] == 10), 'month'] = 'OCT'
+    Xpo_raw.loc[(Xpo_raw['monthn'] == 11), 'month'] = 'NOV'
+    Xpo_raw.loc[(Xpo_raw['monthn'] == 12), 'month'] = 'DEC'
+    
+    nbmth = nbmth - 1
+    maxdate = datetime.datetime.strptime(maxdate, '%Y%m%d')
+    mindate = maxdate - relativedelta(months = nbmth)
+    Xpo_raw_1 = Xpo_raw[(Xpo_raw['timep'] >= mindate) & (Xpo_raw['timep'] <= maxdate)]
+    Xpo_raw_1 = Xpo_raw_1.sort_values(['findr'])
+   
+    a = nbframe_adj * nbmth_adj
+    a += 1
+    CS4_j_2 = pd.DataFrame()
+    for j in range(nbmth_adj, a, nbmth_adj):
+        b = j - nbmth_adj
+        bornelow = maxdate - relativedelta(months = j)
+        bornehigh = maxdate - relativedelta(months = b)
+        CS4_j = Xpo_raw[(Xpo_raw['timep'] > bornelow) & (Xpo_raw['timep'] <= bornehigh)]
+        CS4_j['groupe'] = j
+        CS4_j_1 = pd.concat([CS4_j, CS4_j_2], ignore_index=True)
+        CS4_j_2 = CS4_j_1
+    Xponent_MAT_counts_prod = CS4_j_2        
+    # Xponent_MAT_counts_prod = Xponent_MAT_counts_prod[(Xponent_MAT_counts_prod['timep'] >= maxdate - relativedelta(months = 11)) & (Xponent_MAT_counts_prod['timep'] <= maxdate)]
+    XPONENT_ACT_TRX = Xponent_MAT_counts_prod
+    XPONENT_ACT_TRX = XPONENT_ACT_TRX.rename(columns = {'province':"PROV", 'product_logical_order':"PRODUCT_LOGICAL_ORDER"})
+    XPONENT_ACT_TRX = XPONENT_ACT_TRX.drop(['date', 'year', 'monthn', 'MAT', 'month', 'prod'], axis=1)
+    
+    return XPONENT_ACT_TRX
+
+
+def adj_trx(nbmth_adj_1, totmonth_1, maxdate_1):
+    """filename = "XPO_FLAT_CM_DIM_Biron_Segmentation.csv"
+    df = pd.read_csv(filename)""" 
+    df = cm_dim
+    df_PRODUCT_SHORT_NAME = df[["PRODUCT_SHORT_NAME"]]
+    df_PRODUCT_SHORT_NAME = df_PRODUCT_SHORT_NAME.drop_duplicates(subset=['PRODUCT_SHORT_NAME'])
+    df_PRODUCT_SHORT_NAME["PRODUCT_LOGICAL_ID"] = np.nan
+    for i in range(len(df_PRODUCT_SHORT_NAME)):
+        df_PRODUCT_SHORT_NAME["PRODUCT_LOGICAL_ID"].iloc[i] = i + 1
+    df_PRODUCT_SHORT_NAME.PRODUCT_LOGICAL_ID = pd.to_numeric(df_PRODUCT_SHORT_NAME.PRODUCT_LOGICAL_ID,downcast='signed')
+    df = df.drop('PRODUCT_LOGICAL_ORDER', axis = 1)
+    df = pd.merge(df, df_PRODUCT_SHORT_NAME, on="PRODUCT_SHORT_NAME", how="left")
+
+    dff = pd.DataFrame()
+    dff = pd.concat([dff, df["PRODUCT_SHORT_NAME"].str.split(' ', expand=True)], axis=1)
+    dff["Full_Name"] = df['PRODUCT_SHORT_NAME']
+    dff["PRODUCT_LOGICAL_ID"] = df['PRODUCT_LOGICAL_ID']
+    
+    ## "PRODUCT_SHORT_NAME" should contain less than 3 parts and 2 blanks
+    dfff = pd.DataFrame()
+    if len(dff.columns) == 5:
+        dff_Null = dff[dff[1].str.slice(0, 5).isnull()]
+        dff_Null["Name"] = dff_Null[0].str.slice(0, 5)
+        dff_NotNull = dff[dff[1].str.slice(0, 5).notnull() & dff[2].str.slice(0, 5).isnull()]
+        dff_NotNull["Name"] = dff_NotNull[0].str.slice(0, 5) + "_" + dff_NotNull[1].str.slice(0, 5)
+        dff_NotNull_2 = dff[dff[2].str.slice(0, 5).notnull()]
+        dff_NotNull_2["Name"] = dff_NotNull_2[0].str.slice(0, 5) + "_" + dff_NotNull_2[1].str.slice(0, 5) + "_" + dff_NotNull_2[2].str.slice(0, 5)
+        dfff = pd.concat([dff_Null, dff_NotNull, dff_NotNull_2], ignore_index=True)
+        dfff.PRODUCT_LOGICAL_ID = pd.to_numeric(dfff.PRODUCT_LOGICAL_ID)
+    elif len(dff.columns) == 4:
+        dff_Null = dff[dff[1].str.slice(0, 5).isnull()]
+        dff_Null["Name"] = dff_Null[0].str.slice(0, 5)
+        dff_NotNull = dff[dff[1].str.slice(0, 5).notnull()]
+        dff_NotNull["Name"] = dff_NotNull[0].str.slice(0, 5) + "_" + dff_NotNull[1].str.slice(0, 5)
+        dfff = pd.concat([dff_Null, dff_NotNull], ignore_index=True)
+        dfff.PRODUCT_LOGICAL_ID = pd.to_numeric(dfff.PRODUCT_LOGICAL_ID)
+    elif len(dff.columns) == 3:
+        dfff = dff
+        dfff["Name"] = dff[0].str.slice(0, 5)
+        dfff.PRODUCT_LOGICAL_ID = pd.to_numeric(dfff.PRODUCT_LOGICAL_ID)
+    
+    key = dfff["PRODUCT_LOGICAL_ID"]
+    value = dfff["Name"]
+    prod_dict = dict(zip(key,value))
+    
+    """filename = "AGG_GPX_CSG_MONTHLY_Biron_Segmentation.csv"
+    RX_table = pd.read_csv(filename)""" 
+    # RX_table = RX_table.rename(columns={'MONTH_':'MONTH'})
+    RX_table['MONTH'] = RX_table['MONTH'].apply(str)
+    RX_table['yy'] = RX_table['MONTH'].str[:5]
+    RX_table['mm'] = RX_table['MONTH'].str[5:]
+    
+    removetable = str.maketrans('', '', ',')
+    RX_table['yy'] = [s.translate(removetable) for s in RX_table['yy']]
+    RX_table['yy'] = pd.to_numeric(RX_table['yy'])
+    RX_table['mm'] = pd.to_numeric(RX_table['mm'])
+    RX_table['date_temp'] = pd.to_datetime((RX_table['yy'].values*10000 + RX_table['mm'].values*100 + 1), format = "%Y%m%d")
+    CS3 = RX_table
+    CS3 = CS3.drop(['MONTH','yy','mm'], axis=1)
+    
+    def xpo_1(nbmth_adj, totmonth, maxdate): 
+        totmonth = totmonth + 1
+        CS4_j_2 = pd.DataFrame()
+        #maxdate = "20190301"
+        maxdate = datetime.datetime.strptime(maxdate, '%Y%m%d')
+        for j in range(nbmth_adj, totmonth, nbmth_adj):
+            b = j - nbmth_adj
+            bornelow = maxdate - relativedelta(months = j)
+            bornehigh = maxdate - relativedelta(months = b)
+            CS4_j = CS3[(CS3['date_temp'] > bornelow) & (CS3['date_temp'] <= bornehigh)]
+            CS4_j['groupe'] = j
+            CS4_j_1 = pd.concat([CS4_j, CS4_j_2], ignore_index=True)
+            CS4_j_2 = CS4_j_1
+        return CS4_j_2
+
+    CS333 = xpo_1(nbmth_adj_1, totmonth_1, maxdate_1)
+    CS4 = CS333[['date_temp', 'groupe']]
+    CS4 = CS4.drop_duplicates()
+
+    CS33 = CS333
+    removetable = str.maketrans('', '', ',')
+    CS33['TRX'] = [s.translate(removetable) for s in CS33['TRX']]
+    CS33['TRX'] = pd.to_numeric(CS33['TRX'])
+    removetable = str.maketrans('', '', ',')
+    CS33['TRX_DOLLARS'] = [s.translate(removetable) for s in CS33['TRX_DOLLARS']]
+    CS33['TRX_DOLLARS'] = pd.to_numeric(CS33['TRX_DOLLARS'])
+    RX_update = CS33
+    
+    dff_1 = dff[['Full_Name', 'PRODUCT_LOGICAL_ID']]
+    # dff_1 = dff_1.rename(columns = {'PRODUCT_LOGICAL_ID':'PRODUCT_LOGICAL_ORDER', 'Full_Name':'PRODUCT_SHORT_NAME'})
+    dff_1 = dff_1.rename(columns = {'Full_Name':'PRODUCT_SHORT_NAME'})
+    dff_1 = dff_1.drop_duplicates()
+    # RX_update.drop('PRODUCT_LOGICAL_ORDER',axis=1, inplace=True)
+    RX_update = pd.merge(RX_update, dff_1,  how='left', on = ['PRODUCT_SHORT_NAME'])
+    
+    reference = RX_update[['PRODUCT_LOGICAL_ORDER', 'PRODUCT_LOGICAL_ID']]
+    reference = reference.drop_duplicates()
+    
+    RX_update = RX_update.groupby(['PROV','PRODUCT_LOGICAL_ORDER', 'groupe'],as_index=False)['TRX', 'TRX_DOLLARS'].sum()
+    RX_update = RX_update.sort_values(['PRODUCT_LOGICAL_ORDER', 'groupe', 'PROV'])
+    RX_update = RX_update.rename(columns = {'TRX':'scripts','TRX_DOLLARS':'dollars','PRODUCT_LOGICAL_ORDER':"prod"})
+    temp_TRX = RX_update
+    
+    prov = pd.DataFrame({'PROV':['AB', 'BC', 'MB', 'NB', 'NL', 'NS', 'ON', 'PE', 'QC', 'SK']})
+    b = temp_TRX['groupe']
+    b = b.drop_duplicates()
+    a = 10 * len(b)*len(prod_dict)
+    templt_TRX1 = pd.DataFrame (np.random.randn(a, 3), columns = ["PROV","groupe", "prod"]) 
+    
+    for i in range(0,10):
+        z = len(b)*i*len(prod_dict)
+        for j in range(0,len(b)):
+            z1 = j*len(prod_dict)
+            for n in range(0,(len(prod_dict)*len(b))):
+                w1 = z + n
+                templt_TRX1.iloc[w1,0] = prov.iloc[i,0]
+            
+    for j in range(0,len(b)):
+        for k in range(0, 10*len(prod_dict)*len(b), len(b)):
+            w2 = k+j
+            templt_TRX1.iloc[w2,1] = b.iloc[j]        
+    
+    for i in range(0,10):
+        z = len(b)*i*len(prod_dict)
+        for j in range(0,len(prod_dict)):
+            w = z + j*2
+            j += 1
+            templt_TRX1.iloc[w,2] = j
+            templt_TRX1.iloc[w+1,2] = j
+    
+    templt_TRX1 = templt_TRX1.rename(columns = {'prod':"PRODUCT_LOGICAL_ID"})
+    templt_TRX1 = pd.merge(templt_TRX1, reference, on="PRODUCT_LOGICAL_ID", how="left")
+    templt_TRX1 = templt_TRX1.rename(columns = {'PRODUCT_LOGICAL_ORDER':"prod"})
+    
+    temp2_TRX = pd.merge(templt_TRX1, RX_update,  how='left', on = ["PROV","groupe", "prod"])
+    temp2_TRX['short_name'] = temp2_TRX['PRODUCT_LOGICAL_ID'].map(prod_dict)
+    temp2_TRX["scripts"] = temp2_TRX["scripts"].replace(np.nan, 0)
+    temp2_TRX['dol_TRX'] = np.nan
+    temp2_TRX['dol_TRX'] = temp2_TRX["dollars"]/temp2_TRX["scripts"]
+    temp2_TRX = temp2_TRX.drop(['scripts','dollars'], axis=1)
+    
+    ref = temp2_TRX[temp2_TRX['PROV'] == 'QC']
+    ref['ref'] = ref['dol_TRX']
+    ref = ref.drop(['PROV', 'dol_TRX', 'prod'], axis = 1)
+    temp2_TRX1 = pd.merge(temp2_TRX, ref, on = ["groupe", "short_name", 'PRODUCT_LOGICAL_ID'], how='left')
+    
+    adj_trx = temp2_TRX1[temp2_TRX1["ref"] > 0]
+    adj_trx["adj"] = adj_trx["dol_TRX"] / adj_trx["ref"]
+    adj_trx_1 = adj_trx[adj_trx['adj'] > 0]
+    adj_trx_1 = adj_trx_1.drop('PRODUCT_LOGICAL_ID', axis = 1)
+    adj_trx_1 = adj_trx_1.rename(columns = {'short_name':"PRODUCT_SHORT_NAME"})
+    # adj_trx.to_csv(".\adj_trx_1.csv")
+
+    
+    adj_trx_2 = adj_trx[adj_trx['adj'] == 0]
+    explain_trx = temp2_TRX1[temp2_TRX1["ref"] == 0]
+    explain_trx["adj"] = 0
+    explain_trx = pd.concat([explain_trx, adj_trx_2], ignore_index=True)
+    # explain_trx.to_csv(".\explain_trx.csv")
+
+    climkt_CS_MAT_counts_prods = xpo_1(nbmth_adj_1, totmonth_1, maxdate_1)
+    def xpo_2(maxdate): 
+        maxdate = datetime.datetime.strptime(maxdate, '%Y%m%d')
+        bornelow1 = maxdate - relativedelta(months = 11)
+        bornehigh1 = maxdate - relativedelta(months = 0)
+        aa = climkt_CS_MAT_counts_prods[(climkt_CS_MAT_counts_prods['date_temp'] > bornelow1) & \
+                                                            (climkt_CS_MAT_counts_prods['date_temp'] <= bornehigh1)]                            
+        return aa
+    
+    climkt_CS_MAT_counts_prods = xpo_2(maxdate_1)
+    climkt_CS_MAT_counts_prods = climkt_CS_MAT_counts_prods.rename(columns = {'PRODUCT_LOGICAL_ORDER':"prod"})
+    
+    removetable = str.maketrans('', '', ',')
+    climkt_CS_MAT_counts_prods['TRX'] = [s.translate(removetable) for s in climkt_CS_MAT_counts_prods['TRX']]
+    climkt_CS_MAT_counts_prods['TRX'] = pd.to_numeric(climkt_CS_MAT_counts_prods['TRX'])
+    climkt_CS_MAT_counts_prods = climkt_CS_MAT_counts_prods.groupby(['prod'],as_index=False)['TRX'].sum()
+    climkt_CS_MAT_counts_prods = climkt_CS_MAT_counts_prods.sort_values(['prod'])
+    climkt_CS_MAT_counts_prods = climkt_CS_MAT_counts_prods.rename(columns={'TRX':'count_scripts'})
+    climkt_CS_MAT_counts_prods = climkt_CS_MAT_counts_prods.drop_duplicates(subset=['prod', 'count_scripts'])
+    
+    return  adj_trx_1
+
+# adj_trx(nbmth_adj_1, totmonth_1, maxdate_1)
+adj_trx = adj_trx(12, 24, "20220301")
+
+# xpo(maxdate, nbmth, nbframe_adj, nbmth_adj)
+xpo = xpo("20220301",4, 2, 12)
+
+DF = pd.merge(xpo, adj_trx,  how='left', on = ['PROV', 'groupe', 'prod'])
+DF.loc[:, 'rx'] = pd.to_numeric(DF.loc[:, 'rx'].str.replace(',', ''))
+DF['trx_adj'] = np.nan
+DF['trx_adj'] = DF['adj'] * DF['rx']
+
